@@ -1,8 +1,42 @@
-#!/bin/bash
-set -e
-SOCKNAME=/var/run/ustripe/ustriped.sock
-while true ; do
-  ustripec --printable --decode --exit-on-error "$SOCKNAME" ustripe-injectkeys --beep || true
-  xdpyinfo >/dev/null 2>&1 || exit 1    # Exit when X exits
-  sleep 2
-done
+#!/usr/bin/python
+import Xlib.display
+import Xlib.error
+import subprocess
+import select
+import os
+import signal
+
+# Parameters
+SOCKNAME = "/var/run/ustripe/ustriped.sock"
+COMMAND = ["ustripec", "--printable", "--decode", SOCKNAME, "ustripe-injectkeys", "--beep"]
+
+def spawn_child(args):
+  # Create the child process, and a pipe that we'll pass to select() to detect when the child process exits.
+  child_pipe, child_pipe_b = os.pipe()
+  proc = subprocess.Popen(args, preexec_fn=lambda: os.close(child_pipe))
+  os.close(child_pipe_b)
+  return (proc, child_pipe)
+
+if __name__ == '__main__':
+  # Open connection to the X11 display
+  dpy = Xlib.display.Display()
+
+  done = False
+  proc, child_pipe = spawn_child(COMMAND)
+  while not done:
+    rr,ww,ee = select.select([dpy, child_pipe], [], [])
+
+    if child_pipe in rr:
+      os.close(child_pipe)
+      assert proc.poll() is not None
+      proc.wait()
+      proc, child_pipe = spawn_child(COMMAND)
+
+    if dpy in rr:
+      try:
+        dpy.next_event()
+      except Exception:
+        done = True
+
+  proc.send_signal(signal.SIGHUP)
+  proc.wait()

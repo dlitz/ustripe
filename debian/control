@@ -8,7 +8,7 @@ Homepage: <insert the upstream URL, if relevant>
 
 Package: ustripe
 Architecture: all
-Depends: python (>= 2.5), xautomation (>= 0.99-1), udev, x11-common, ${shlibs:Depends}, ${misc:Depends}
+Depends: python (>= 2.6), xautomation (>= 0.99-1), udev, x11-common, python-xlib, ${misc:Depends}
 Suggests: beep (>= 1.2.2-16) 
 Description: User-space magnetic stripe reader driver
  This package allows connecting a USB HID magnetic stripe reader, and emulating a keyboard with it.
