@@ -1,0 +1,8 @@
+#!/bin/bash
+set -e
+SOCKNAME=/var/run/ustripe/ustriped.sock
+while true ; do
+  ustripec --printable --decode --exit-on-error "$SOCKNAME" ustripe-injectkeys --beep || true
+  xdpyinfo >/dev/null 2>&1 || exit 1    # Exit when X exits
+  sleep 2
+done

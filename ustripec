@@ -1,0 +1,77 @@
+#!/usr/bin/python
+from optparse import OptionParser
+import socket
+import subprocess
+import os
+from StringIO import StringIO
+
+if __name__ == '__main__':
+    # Parse arguments
+    parser = OptionParser(usage="usage: %prog [options] SOCKNAME COMMAND ARG...")
+    parser.disable_interspersed_args()
+    parser.add_option("-d", "--decode", help="decode Turbo TLP-224 data", action="store_true", dest="decode")
+    parser.add_option("-p", "--printable", help="only include printable ASCII characters", action="store_true", dest="printable")
+    parser.add_option("-b", "--include-blank", help="run COMMAND, even when there is no data", action="store_true", dest="include_blank")
+    parser.add_option("-e", "--exit-on-error", help="exit if COMMAND returns an error", action="store_true", dest="exit_on_error")
+    (options, args) = parser.parse_args()
+    sockname = args.pop(0)  # shift
+
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.connect(sockname)
+    rfile = sock.makefile("r")
+
+    for line in rfile:
+        # Parse the line
+        line = line.rstrip()
+        if not line.startswith("I:"):
+            continue
+        header, hexdata = line.split(":")[1:3]
+        header = list(str(int(h,16)) for h in header.split(","))
+        env = os.environ.copy()
+        env.update({
+            "TRACK1_DECODE_OK": header[0],
+            "TRACK2_DECODE_OK": header[1],
+            "TRACK3_DECODE_OK": header[2],
+            "TRACK1_DATA_LENGTH": header[3],
+            "TRACK2_DATA_LENGTH": header[4],
+            "TRACK3_DATA_LENGTH": header[5],
+            "CARD_ENCODE_TYPE": header[6],
+        })
+
+        data = hexdata.decode('hex')
+        
+        if options.decode:
+            # Response data is in Turbo TLP-224 format:
+            #           <ACK> <Length> <Command> <LRC> <ETX>
+            # or:
+            #           <NACK> <Length> <Status> <LRC> <ETX>
+            # - ACK:  "\x60"
+            # - NACK: "\xE0"
+            # - ETX:  "\x03"
+            # - Length: Two-byte length of <Command> or <Status>
+            if len(data) <= 7:
+                continue
+
+            # strip header/trailer
+            data = data[3:-2]
+
+        if options.printable:
+            # Keep only printable characters and CR
+            data = "".join(c for c in data if c == "\r" or 0x20 <= ord(c) <= 0x7e)
+
+            # Replace CR with LF
+            data = data.replace("\r", "\n")
+
+        # If there's nothing to send, send nothing.
+        if not options.include_blank and not data:
+            continue
+
+        proc = subprocess.Popen(args, stdin=subprocess.PIPE, env=env)
+        proc.stdin.write(data)
+        proc.stdin.close()
+        proc.wait()
+
+        if options.exit_on_error and proc.returncode != 0:
+            exit((proc.returncode >> 8) or 1)
+
+# vim:set ts=4 sw=4 sts=4 expandtab:

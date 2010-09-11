@@ -1,0 +1,154 @@
+#!/usr/bin/python
+
+from optparse import OptionParser
+import struct
+import socket
+import select
+import os
+import pwd
+
+CARDREADER_USAGE_PAGE = 0xff00      # vendor-defined
+USAGE_TRACK1_DECODE_STATUS = 0x20
+USAGE_TRACK2_DECODE_STATUS = 0x21
+USAGE_TRACK3_DECODE_STATUS = 0x22
+USAGE_TRACK1_DATA_LENGTH = 0x28
+USAGE_TRACK2_DATA_LENGTH = 0x29
+USAGE_TRACK3_DATA_LENGTH = 0x2A
+USAGE_CARD_ENCODE_TYPE = 0x38
+USAGE_TOTAL_DATA_LENGTH = 0x30
+USAGE_OUTPUT_DATA = 0x31
+
+class HidParser(object):
+    def __init__(self, client_sockets):
+        self.client_sockets = client_sockets
+
+    def reset(self):
+        self.track1_decode_ok = None
+        self.track2_decode_ok = None
+        self.track3_decode_ok = None
+        self.track1_data_length = None
+        self.track2_data_length = None
+        self.track3_data_length = None
+        self.card_encode_type = None
+        self.raw_total_data_length = []
+        self.total_data_length = None
+        self.data = []
+        self.done = False
+
+    def process(self, usage, value):
+        if usage == USAGE_TRACK1_DECODE_STATUS:
+            self.reset()
+            self.track1_decode_ok = (value == 0)
+        elif usage == USAGE_TRACK2_DECODE_STATUS:
+            self.track2_decode_ok = (value == 0)
+        elif usage == USAGE_TRACK3_DECODE_STATUS:
+            self.track3_decode_ok = (value == 0)
+        elif usage == USAGE_TRACK1_DATA_LENGTH:
+            self.track1_data_length = value
+        elif usage == USAGE_TRACK2_DATA_LENGTH:
+            self.track2_data_length = value
+        elif usage == USAGE_TRACK3_DATA_LENGTH:
+            self.track3_data_length = value
+        elif usage == USAGE_CARD_ENCODE_TYPE:
+            self.card_encode_type = value
+        elif usage == USAGE_TOTAL_DATA_LENGTH:
+            self.raw_total_data_length.append(value)
+            if len(self.raw_total_data_length) == 2:
+                a,b = self.raw_total_data_length
+                self.total_data_length = (a << 8) | b
+        elif usage == USAGE_OUTPUT_DATA:
+            if len(self.data) < self.total_data_length:
+                self.data.append(value)
+            elif not self.done:
+                data = "".join(chr(v) for v in self.data)
+                self.output_data(data)
+                self.done = True
+
+    def output_data(self, data):
+        # Format:
+        #   I:<header>:<data>
+        # where <header> is comma-separated, hex-encoded:
+        #   <track1-decode-ok>
+        #   <track2-decode-ok>
+        #   <track3-decode-ok>
+        #   <track1-data-length>
+        #   <track2-data-length>
+        #   <track3-data-length>
+        #   <card-encode-type>
+        header = "%x,%x,%x,%x,%x,%x,%x" % (
+            self.track1_decode_ok, self.track2_decode_ok,
+            self.track3_decode_ok, self.track1_data_length,
+            self.track2_data_length, self.track3_data_length,
+            self.card_encode_type)
+        output = ("I:%s:%s\n" % (header, data.encode('hex')))
+        for client_socket in client_sockets:
+            client_socket.send(output)
+
+if __name__ == '__main__':
+    # Parse arguments
+    parser = OptionParser(usage="usage: %prog [options] DEVNAME SOCKNAME")
+    parser.add_option("-m", "--mode", help="set permissions on the socket to MODE", type="int", dest="mode", metavar="MODE")
+    parser.add_option("-u", "--user", help="switch to USERNAME after opening files/sockets", dest="user", metavar="USERNAME")
+    (options, args) = parser.parse_args()
+    (devname, sockname) = args
+
+    # Record structure when reading from /dev/usb/hiddev*:
+    #   struct hiddev_event {
+    #         unsigned hid;
+    #         signed int value;
+    #   }
+    struct_hiddev_event = "@Ii"
+    read_size = struct.calcsize(struct_hiddev_event)
+
+    # Open devices
+    hiddev = open(devname, "rb")
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.setblocking(False)
+
+    # Bind the socket and set permissions
+    if options.mode is None:
+        sock.bind(sockname)
+    else:
+        old_mask = os.umask(0777)
+        try:
+            sock.bind(sockname)
+            os.chmod(sockname, options.mode)
+        finally:
+            os.umask(old_mask)
+
+    if options.user:
+        # Drop privileges
+        u = pwd.getpwnam(options.user)
+        os.setgroups([])
+        os.setgid(u.pw_gid)
+        os.setuid(u.pw_uid)
+
+    sock.listen(5)
+    client_sockets = []
+
+    # Create parser
+    parser = HidParser(client_sockets)
+    buf = "x"
+    while buf:
+        rr, ww, ee = select.select([hiddev, sock] + client_sockets, [], [])
+        if hiddev in rr:
+            rr.remove(hiddev)
+            buf = hiddev.read(read_size)
+            hid, value = struct.unpack(struct_hiddev_event, buf)
+            usage_page = ((hid >> 16) & 0xffff)
+            usage = hid & 0xffff
+            if usage_page != CARDREADER_USAGE_PAGE:
+                continue
+            parser.process(usage, value)
+        if sock in rr:
+            rr.remove(sock)
+            (s, remote_addr) = sock.accept()
+            s.setblocking(False)
+            client_sockets.append(s)
+        for client_socket in rr:
+            data = client_socket.recv(1024)        # non-blocking read
+            if not data:    # socket closed
+                client_socket.close()
+                client_sockets.remove(client_socket)
+
+# vim:set ts=4 sw=4 sts=4 expandtab:

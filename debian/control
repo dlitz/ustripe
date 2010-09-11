@@ -1,0 +1,17 @@
+Source: ustripe
+Section: unknown
+Priority: extra
+Maintainer: Dwayne Litzenberger <dlitz@dlitz.net>
+Build-Depends: cdbs, debhelper (>= 7)
+Standards-Version: 3.8.3
+Homepage: <insert the upstream URL, if relevant>
+
+Package: ustripe
+Architecture: all
+Depends: python (>= 2.5), xautomation (>= 0.99-1), udev, x11-common, ${shlibs:Depends}, ${misc:Depends}
+Suggests: beep (>= 1.2.2-16) 
+Description: User-space magnetic stripe reader driver
+ This package allows connecting a USB HID magnetic stripe reader, and emulating a keyboard with it.
+ .
+ It supports the following reader(s):
+  - ID Tech Spectrum(TM) III
