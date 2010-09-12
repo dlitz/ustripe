@@ -12,5 +12,4 @@ install:
 	install -m0755 ./ustripe-injectkeys $(DESTDIR)/usr/bin/ustripe-injectkeys
 	install -m0755 ./ustripe-x-daemon $(DESTDIR)/usr/bin/ustripe-x-daemon
 	install -m0755 ./udev/ustriped-udev $(DESTDIR)/usr/sbin/ustriped-udev
-	install -m0644 ./udev/85-ustriped.rules $(DESTDIR)/lib/udev/rules.d/85-ustriped.rules
 	install -m0644 ./Xsession.d/90ustripe_start $(DESTDIR)/etc/X11/Xsession.d/90ustripe_start
