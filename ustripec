@@ -24,7 +24,7 @@ from optparse import OptionParser
 import socket
 import subprocess
 import os
-from StringIO import StringIO
+import sys
 
 if __name__ == '__main__':
     # Parse arguments
@@ -38,7 +38,10 @@ if __name__ == '__main__':
     sockname = args.pop(0)  # shift
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.connect(sockname)
+    try:
+        sock.connect(sockname)
+    except:
+        sys.exit(1)     # exit silently if the socket does not exist
     rfile = sock.makefile("r")
 
     for line in rfile:

@@ -26,6 +26,7 @@ import subprocess
 import select
 import os
 import signal
+import time
 
 # Parameters
 SOCKNAME = "/var/run/ustripe/ustriped.sock"
@@ -49,8 +50,8 @@ if __name__ == '__main__':
 
     if child_pipe in rr:
       os.close(child_pipe)
-      assert proc.poll() is not None
       proc.wait()
+      time.sleep(1)
       proc, child_pipe = spawn_child(COMMAND)
 
     if dpy in rr:
