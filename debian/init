@@ -1,6 +1,8 @@
 #!/bin/sh
 #
-# Script to clean up /var/run/ustripe
+# ustripe startup routines:
+# - clean up /var/run/ustripe
+# - ensure that the udev event for hiddev* has been triggered
 #
 
 ### BEGIN INIT INFO
@@ -19,6 +21,12 @@ if [ "$1" = "start" ] ; then
         rm -rf /var/run/ustripe
     fi
     install -m 0755 -d /var/run/ustripe
+fi
+
+# HACK FIXME - This is done to make sure that ustriped is loaded at startup,
+# but it shouldn't be necessary.
+if [ "$1" = "start" ] ; then
+    udevadm trigger --sysname-match='hiddev*'
 fi
 
 exit 0
