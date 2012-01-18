@@ -1,1 +1,5 @@
+# ID TECH Spectrum III MagStripe Only, Insert Reader (SPT3-3xx Series, configured as USB HID)
 ACTION=="add", KERNEL=="hiddev*", ATTRS{idVendor}=="0acd", ATTRS{idProduct}=="0640", ENV{USTRIPE_SUPPORTED}="1", RUN+="/usr/sbin/ustriped-udev"
+
+# MagTek Mini Swipe Reader (USB HID)
+ACTION=="add", KERNEL=="hiddev*", ATTRS{idVendor}=="0801", ATTRS{idProduct}=="0002", ENV{USTRIPE_SUPPORTED}="1", RUN+="/usr/sbin/ustriped-udev"

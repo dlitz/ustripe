@@ -28,20 +28,41 @@ import select
 import os
 import pwd
 
-CARDREADER_USAGE_PAGE = 0xff00      # vendor-defined
-USAGE_TRACK1_DECODE_STATUS = 0x20
-USAGE_TRACK2_DECODE_STATUS = 0x21
-USAGE_TRACK3_DECODE_STATUS = 0x22
-USAGE_TRACK1_DATA_LENGTH = 0x28
-USAGE_TRACK2_DATA_LENGTH = 0x29
-USAGE_TRACK3_DATA_LENGTH = 0x2A
-USAGE_CARD_ENCODE_TYPE = 0x38
-USAGE_TOTAL_DATA_LENGTH = 0x30
-USAGE_OUTPUT_DATA = 0x31
+# HID usage pages
+USAGE = {
+    "idtech": {
+        "CARDREADER_USAGE_PAGE": 0xff00,      # vendor-defined
+        "TRACK1_DECODE_STATUS": 0x20,
+        "TRACK2_DECODE_STATUS": 0x21,
+        "TRACK3_DECODE_STATUS": 0x22,
+        "TRACK1_DATA_LENGTH": 0x28,
+        "TRACK2_DATA_LENGTH": 0x29,
+        "TRACK3_DATA_LENGTH": 0x2A,
+        "CARD_ENCODE_TYPE": 0x38,
+        "TOTAL_DATA_LENGTH": 0x30,
+        "OUTPUT_DATA": 0x31,
+    },
+
+    "magtek": {
+        "CARDREADER_USAGE_PAGE": 0xff00,      # vendor-defined
+        "TRACK1_DECODE_STATUS": 0x20,
+        "TRACK2_DECODE_STATUS": 0x21,
+        "TRACK3_DECODE_STATUS": 0x22,
+        "TRACK1_DATA_LENGTH": 0x28,
+        "TRACK2_DATA_LENGTH": 0x29,
+        "TRACK3_DATA_LENGTH": 0x2A,
+        "TRACK1_DATA": 0x30,
+        "TRACK2_DATA": 0x31,
+        "TRACK3_DATA": 0x32,
+        "CARD_ENCODE_TYPE": 0x38,
+    },
+}
+
 
 class HidParser(object):
-    def __init__(self, client_sockets):
+    def __init__(self, client_sockets, model=None):
         self.client_sockets = client_sockets
+        self.usage_ids = USAGE[model]
 
     def reset(self):
         self.track1_decode_ok = None
@@ -57,27 +78,27 @@ class HidParser(object):
         self.done = False
 
     def process(self, usage, value):
-        if usage == USAGE_TRACK1_DECODE_STATUS:
+        if usage == self.usage_ids["TRACK1_DECODE_STATUS"]:
             self.reset()
             self.track1_decode_ok = (value == 0)
-        elif usage == USAGE_TRACK2_DECODE_STATUS:
+        elif usage == self.usage_ids["TRACK2_DECODE_STATUS"]:
             self.track2_decode_ok = (value == 0)
-        elif usage == USAGE_TRACK3_DECODE_STATUS:
+        elif usage == self.usage_ids["TRACK3_DECODE_STATUS"]:
             self.track3_decode_ok = (value == 0)
-        elif usage == USAGE_TRACK1_DATA_LENGTH:
+        elif usage == self.usage_ids["TRACK1_DATA_LENGTH"]:
             self.track1_data_length = value
-        elif usage == USAGE_TRACK2_DATA_LENGTH:
+        elif usage == self.usage_ids["TRACK2_DATA_LENGTH"]:
             self.track2_data_length = value
-        elif usage == USAGE_TRACK3_DATA_LENGTH:
+        elif usage == self.usage_ids["TRACK3_DATA_LENGTH"]:
             self.track3_data_length = value
-        elif usage == USAGE_CARD_ENCODE_TYPE:
+        elif usage == self.usage_ids["CARD_ENCODE_TYPE"]:
             self.card_encode_type = value
-        elif usage == USAGE_TOTAL_DATA_LENGTH:
+        elif usage == self.usage_ids["TOTAL_DATA_LENGTH"]:
             self.raw_total_data_length.append(value)
             if len(self.raw_total_data_length) == 2:
                 a,b = self.raw_total_data_length
                 self.total_data_length = (a << 8) | b
-        elif usage == USAGE_OUTPUT_DATA:
+        elif usage in (self.usage_ids.get("OUTPUT_DATA"), self.usage_ids.get("TRACK1_DATA"), self.usage_ids.get("TRACK2_DATA"), self.usage_ids.get("TRACK3_DATA")):
             if len(self.data) < self.total_data_length:
                 self.data.append(value)
             elif not self.done:
@@ -110,6 +131,9 @@ if __name__ == '__main__':
     parser = OptionParser(usage="usage: %prog [options] DEVNAME SOCKNAME")
     parser.add_option("-m", "--mode", help="set permissions on the socket to MODE", type="int", dest="mode", metavar="MODE")
     parser.add_option("-u", "--user", help="switch to USERNAME after opening files/sockets", dest="user", metavar="USERNAME")
+    parser.add_option("-M", "--model", help="set card reader model", type="string", dest="model", metavar="NAME", default="idtech")
+    parser.add_option("-v", "--verbose", help="verbose output", action="store_true", dest="verbose")
+    parser.epilog = "Supported card reader models: idtech magtek"
     (options, args) = parser.parse_args()
     (devname, sockname) = args
 
@@ -148,7 +172,7 @@ if __name__ == '__main__':
     client_sockets = []
 
     # Create parser
-    parser = HidParser(client_sockets)
+    parser = HidParser(client_sockets, model=options.model)
     buf = "x"
     while buf:
         rr, ww, ee = select.select([hiddev, sock] + client_sockets, [], [])
@@ -158,7 +182,7 @@ if __name__ == '__main__':
             hid, value = struct.unpack(struct_hiddev_event, buf)
             usage_page = ((hid >> 16) & 0xffff)
             usage = hid & 0xffff
-            if usage_page != CARDREADER_USAGE_PAGE:
+            if usage_page != self.usage_ids["CARDREADER_USAGE_PAGE"]:
                 continue
             parser.process(usage, value)
         if sock in rr:
