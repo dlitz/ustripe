@@ -30,7 +30,7 @@ import time
 
 # Parameters
 SOCKNAME = "/var/run/ustripe/ustriped.sock"
-COMMAND = ["ustripec", "--printable", "--decode", SOCKNAME, "ustripe-injectkeys", "--beep"]
+COMMAND = ["ustripec", "--printable", SOCKNAME, "ustripe-injectkeys", "--beep"]
 
 def spawn_child(args):
   # Create the child process, and a pipe that we'll pass to select() to detect when the child process exits.

@@ -21,4 +21,4 @@
 
 SOCKNAME=/var/run/ustripe/ustriped.sock
 [ -e "$SOCKNAME" ] && rm -f "$SOCKNAME"
-exec /usr/sbin/ustriped --mode=0777 --user=nobody "$DEVNAME" "$SOCKNAME"
+exec /usr/sbin/ustriped --mode=0777 --user=nobody "$DEVNAME" "$SOCKNAME" "$@"

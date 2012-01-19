@@ -22,14 +22,38 @@
 
 
 from optparse import OptionParser
+import array
 import struct
 import socket
 import select
 import os
 import pwd
+import time
+import sys
+from fcntl import ioctl
+
+# Constants from hiddev.h
+HID_VERSION = 0x010004
+HIDIOCGVERSION = 0x80044801
+HIDIOCGFLAG = 0x8004480e
+HIDIOCSFLAG = 0x4004480f
+HIDDEV_FLAG_UREF = 1
+HIDDEV_FLAG_REPORT = 2
+HID_FIELD_INDEX_NONE = 0xffffffff
 
 # HID usage pages
-USAGE = {
+MODEL_DATA = {
+    # ID Tech format:
+    # Offset    Usage
+    # 0         Track 1 decode status
+    # 1         Track 2 decode status
+    # 2         Track 3 decode status
+    # 3         Track 1 data length
+    # 4         Track 2 data length
+    # 5         Track 3 data length
+    # 6         Card encode type
+    # 7,8       Total output length
+    # 9-508     Output data
     "idtech": {
         "CARDREADER_USAGE_PAGE": 0xff00,      # vendor-defined
         "TRACK1_DECODE_STATUS": 0x20,
@@ -39,10 +63,22 @@ USAGE = {
         "TRACK2_DATA_LENGTH": 0x29,
         "TRACK3_DATA_LENGTH": 0x2A,
         "CARD_ENCODE_TYPE": 0x38,
-        "TOTAL_DATA_LENGTH": 0x30,
         "OUTPUT_DATA": 0x31,
+        "size": 509,
     },
 
+    # MagTek format:
+    # Offset    Usage
+    # 0         Track 1 decode status
+    # 1         Track 2 decode status
+    # 2         Track 3 decode status
+    # 3         Track 1 data length
+    # 4         Track 2 data length
+    # 5         Track 3 data length
+    # 6         Card encode type
+    # 7-116     Track 1 data
+    # 117-226   Track 2 data
+    # 227-336   Track 3 data
     "magtek": {
         "CARDREADER_USAGE_PAGE": 0xff00,      # vendor-defined
         "TRACK1_DECODE_STATUS": 0x20,
@@ -55,16 +91,21 @@ USAGE = {
         "TRACK2_DATA": 0x31,
         "TRACK3_DATA": 0x32,
         "CARD_ENCODE_TYPE": 0x38,
+        "size": 337,
     },
 }
 
 
 class HidParser(object):
-    def __init__(self, client_sockets, model=None):
+    def __init__(self, client_sockets, model=None, verbose=False):
         self.client_sockets = client_sockets
-        self.usage_ids = USAGE[model]
+        self.model = model
+        self.mdata = MODEL_DATA[model]
+        self.verbose = verbose
+        self.reset()
 
     def reset(self):
+        self.count = 0
         self.track1_decode_ok = None
         self.track2_decode_ok = None
         self.track3_decode_ok = None
@@ -72,57 +113,76 @@ class HidParser(object):
         self.track2_data_length = None
         self.track3_data_length = None
         self.card_encode_type = None
-        self.raw_total_data_length = []
-        self.total_data_length = None
-        self.data = []
-        self.done = False
+        if self.model == "idtech":
+            self.data = []
+        elif self.model == "magtek":
+            self.track1_data = []
+            self.track2_data = []
+            self.track3_data = []
 
     def process(self, usage, value):
-        if usage == self.usage_ids["TRACK1_DECODE_STATUS"]:
-            self.reset()
+        self.count += 1
+        if usage == self.mdata["TRACK1_DECODE_STATUS"]:
             self.track1_decode_ok = (value == 0)
-        elif usage == self.usage_ids["TRACK2_DECODE_STATUS"]:
+        elif usage == self.mdata["TRACK2_DECODE_STATUS"]:
             self.track2_decode_ok = (value == 0)
-        elif usage == self.usage_ids["TRACK3_DECODE_STATUS"]:
+        elif usage == self.mdata["TRACK3_DECODE_STATUS"]:
             self.track3_decode_ok = (value == 0)
-        elif usage == self.usage_ids["TRACK1_DATA_LENGTH"]:
+        elif usage == self.mdata["TRACK1_DATA_LENGTH"]:
             self.track1_data_length = value
-        elif usage == self.usage_ids["TRACK2_DATA_LENGTH"]:
+        elif usage == self.mdata["TRACK2_DATA_LENGTH"]:
             self.track2_data_length = value
-        elif usage == self.usage_ids["TRACK3_DATA_LENGTH"]:
+        elif usage == self.mdata["TRACK3_DATA_LENGTH"]:
             self.track3_data_length = value
-        elif usage == self.usage_ids["CARD_ENCODE_TYPE"]:
+        elif usage == self.mdata["CARD_ENCODE_TYPE"]:
             self.card_encode_type = value
-        elif usage == self.usage_ids["TOTAL_DATA_LENGTH"]:
-            self.raw_total_data_length.append(value)
-            if len(self.raw_total_data_length) == 2:
-                a,b = self.raw_total_data_length
-                self.total_data_length = (a << 8) | b
-        elif usage in (self.usage_ids.get("OUTPUT_DATA"), self.usage_ids.get("TRACK1_DATA"), self.usage_ids.get("TRACK2_DATA"), self.usage_ids.get("TRACK3_DATA")):
-            if len(self.data) < self.total_data_length:
-                self.data.append(value)
-            elif not self.done:
-                data = "".join(chr(v) for v in self.data)
-                self.output_data(data)
-                self.done = True
+        elif usage == self.mdata.get("OUTPUT_DATA"):
+            # idtech
+            self.data.append(value)
+        elif usage == self.mdata.get("TRACK1_DATA"):
+            if len(self.track1_data) < self.track1_data_length:
+                self.track1_data.append(value)
+        elif usage == self.mdata.get("TRACK2_DATA"):
+            if len(self.track2_data) < self.track2_data_length:
+                self.track2_data.append(value)
+        elif usage == self.mdata.get("TRACK3_DATA"):
+            if len(self.track3_data) < self.track3_data_length:
+                self.track3_data.append(value)
+        if self.model == "idtech" and self.count == self.mdata["size"]:
+            # Response data is in Turbo TLP-224 format:
+            #           <ACK> <Length> <Command> <LRC> <ETX>
+            # or:
+            #           <NACK> <Length> <Status> <LRC> <ETX>
+            # - ACK:  "\x60"
+            # - NACK: "\xE0"
+            # - ETX:  "\x03"
+            # - Length: Two-byte length of <Command> or <Status>
+            if True or self.data[0] == 0x60:  # ACK
+                p = 5       # Skip the preamble
+                self.track1_data = self.data[p:p+self.track1_data_length]; p += self.track1_data_length
+                p += 1      # Skip "\r"
+                self.track2_data = self.data[p:p+self.track2_data_length]; p += self.track2_data_length
+                p += 1      # Skip "\r"
+                self.track3_data = self.data[p:p+self.track3_data_length]; p += self.track3_data_length
+                self.output_data()
+        elif self.model == "magtek" and self.count == self.mdata["size"]:
+            self.output_data()
 
-    def output_data(self, data):
-        # Format:
-        #   I:<header>:<data>
-        # where <header> is comma-separated, hex-encoded:
-        #   <track1-decode-ok>
-        #   <track2-decode-ok>
-        #   <track3-decode-ok>
-        #   <track1-data-length>
-        #   <track2-data-length>
-        #   <track3-data-length>
-        #   <card-encode-type>
-        header = "%x,%x,%x,%x,%x,%x,%x" % (
-            self.track1_decode_ok, self.track2_decode_ok,
-            self.track3_decode_ok, self.track1_data_length,
-            self.track2_data_length, self.track3_data_length,
-            self.card_encode_type)
-        output = ("I:%s:%s\n" % (header, data.encode('hex')))
+    def output_data(self):
+        # Format for card swipe:
+        #   S:<card-encode-type>:<track1data>:<track2data>:<track3data>
+        # Where each field is hexadecimal-encoded.
+        if not self.track1_decode_ok or not self.track2_decode_ok or not self.track3_decode_ok:
+            return      # Don't output anything when we don't encode OK
+        if not self.track1_data and not self.track2_data and not self.track3_data:
+            return      # Don't output anything when we don't have any swipe data
+        track1data = "".join(chr(v) for v in self.track1_data).encode('hex')
+        track2data = "".join(chr(v) for v in self.track2_data).encode('hex')
+        track3data = "".join(chr(v) for v in self.track3_data).encode('hex')
+        output = "S:%x:%s:%s:%s\n" % (self.card_encode_type, track1data, track2data, track3data)
+        if self.verbose:
+            sys.stdout.write(output)
+            #print "DEBUG: %r:%r:%r" % (track1data.decode('hex'), track2data.decode('hex'), track3data.decode('hex'))
         for client_socket in client_sockets:
             client_socket.send(output)
 
@@ -142,11 +202,24 @@ if __name__ == '__main__':
     #         unsigned hid;
     #         signed int value;
     #   }
-    struct_hiddev_event = "@Ii"
-    read_size = struct.calcsize(struct_hiddev_event)
+    #
+    # Record structure when reading from /dev/usb/hiddev*, after we've set HIDDEV_FLAG_UREF
+    #
+    #   struct hiddev_usage_ref {
+    #           __u32 report_type;
+    #           __u32 report_id;
+    #           __u32 field_index;
+    #           __u32 usage_index;
+    #           __u32 usage_code;
+    #           __s32 value;
+    #   };
+    struct_hiddev_usage_ref = "@IIIIIi"
+    read_size = struct.calcsize(struct_hiddev_usage_ref)
 
     # Open devices
-    hiddev = open(devname, "rb")
+    hiddev = open(devname, "rb", 0)     # NOTE: Input must be unbuffered
+    # Use ioctl so that we read hiddev_usage_ref instead of hiddev_event, and so that we get events between reports.
+    ioctl(hiddev.fileno(), HIDIOCSFLAG, array.array("i", [HIDDEV_FLAG_UREF | HIDDEV_FLAG_REPORT]))
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.setblocking(False)
 
@@ -172,17 +245,20 @@ if __name__ == '__main__':
     client_sockets = []
 
     # Create parser
-    parser = HidParser(client_sockets, model=options.model)
+    parser = HidParser(client_sockets, model=options.model, verbose=options.verbose)
     buf = "x"
     while buf:
         rr, ww, ee = select.select([hiddev, sock] + client_sockets, [], [])
         if hiddev in rr:
             rr.remove(hiddev)
             buf = hiddev.read(read_size)
-            hid, value = struct.unpack(struct_hiddev_event, buf)
-            usage_page = ((hid >> 16) & 0xffff)
-            usage = hid & 0xffff
-            if usage_page != self.usage_ids["CARDREADER_USAGE_PAGE"]:
+            report_type, report_id, field_index, usage_index, usage_code, value = struct.unpack(struct_hiddev_usage_ref, buf)
+            #if options.verbose: print `"%.3f" % time.time(), hex(report_type), hex(report_id), hex(field_index), hex(usage_index), hex(usage_code), hex(value), chr(value)`
+            if field_index == HID_FIELD_INDEX_NONE:
+                parser.reset()
+            usage_page = ((usage_code >> 16) & 0xffff)
+            usage = usage_code & 0xffff
+            if usage_page != MODEL_DATA[options.model]["CARDREADER_USAGE_PAGE"]:
                 continue
             parser.process(usage, value)
         if sock in rr:
