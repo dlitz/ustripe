@@ -1,3 +1,9 @@
+ustripe (1.2) natty; urgency=low
+
+  * Refactor and add support for MagTek card readers.
+
+ -- Dwayne Litzenberger <dlitz@patientway.com>  Wed, 18 Jan 2012 19:13:46 -0500
+
 ustripe (1.1) lucid; urgency=low
 
   * Make sure ustriped gets executed at startup.
